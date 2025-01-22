@@ -1,0 +1,1136 @@
+---
+title: "Multi-Model Analysis - Strategies for Stabilizing Tomato Prices in Nepal"
+author: "Felicia D. O'Garro"
+date: "2024-12-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Strategies for Stabilizing Tomato Prices in Nepal
+
+```{r}
+#Load necessary libraries
+
+library(strucchange) 
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(mice)
+library(tseries)
+library(quantmod)
+library(forecast)
+library(vars)
+library(lmtest) 
+library(corrplot)
+library(MARSS)
+library(lubridate)
+library(gridExtra)
+library(fastDummies)
+library(forecast)
+library(rugarch)
+library(urca)
+library(ggbiplot)
+library(cluster)
+library(car)
+library(glmnet)
+library(zoo)
+```
+
+## Exploratory Analysis 
+
+### Loading and cleaning data and preliminary data analysis
+
+```{r}
+#Load data 
+
+data <- read.csv("kalimati_tarkari_dataset.csv")
+data$Date <- as.Date(data$Date)
+data$Average <- as.numeric(data$Average)
+data$Minimum <- as.numeric(data$Minimum)
+data$Maximum <- as.numeric(data$Maximum)
+
+# Check for missing values
+sum(is.na(data))
+
+# Remove rows with missing values
+data <- na.omit(data)  
+
+head(data)
+
+summary_stats <- data.frame(
+  Metric = c("Minimum", "Maximum", "Average"),
+  Mean = c(mean(data$Minimum, na.rm = TRUE), mean(data$Maximum, na.rm = TRUE), mean(data$Average, na.rm = TRUE)),
+  SD = c(sd(data$Minimum, na.rm = TRUE), sd(data$Maximum, na.rm = TRUE), sd(data$Average, na.rm = TRUE))
+)
+
+print(summary_stats)
+
+# Compute correlation for each group (e.g., by Commodity)
+grouped_corr <- data %>%
+  group_by(Commodity) %>%
+  summarise(correlation = cor(Minimum, Maximum, use = "pairwise.complete.obs"))
+
+print(grouped_corr)
+
+cor_data <- cor(data[, c("Minimum", "Maximum", "Average")], use = "pairwise.complete.obs")
+
+corrplot(cor_data, 
+         method = "circle",        # Use circles for correlation values
+         type = "upper",           # Show only the upper triangle
+         order = "AOE",            # Alphabetical order for labels
+         tl.col = "black",         # Black text labels
+         tl.srt = 45,              # Rotate text labels
+         addCoef.col = "black",    # Add coefficients on the plot
+         col = colorRampPalette(c("red", "white", "blue"))(200))  # Custom color scale
+
+```
+### Explore unique commodities
+
+```{r}
+
+# Explore unique commodities
+
+data$Commodity <- as.factor(data$Commodity)
+unique_commodities <- levels(data$Commodity)
+print(unique_commodities)
+
+```
+### Create category and variety categories
+
+```{r}
+# create category and variety categories
+
+data <- data %>%
+  mutate(
+    Category = case_when(
+      grepl("Tomato Big", Commodity) ~ "Tomato Big", 
+      grepl("Tomato Small", Commodity) ~ "Tomato Small",
+      grepl("Potato Red", Commodity) ~ "Potato Red",
+      grepl("Potato White", Commodity) ~ "Potato White",
+      grepl("Onion Dry", Commodity) ~ "Onion Dry",
+      grepl("Onion Green", Commodity) ~ "Onion Green",
+      grepl("Apple", Commodity) ~ "Apple",
+      grepl("Orange", Commodity) ~ "Orange",
+      grepl("Papaya", Commodity) ~ "Papaya",
+      grepl("Pear", Commodity) ~ "Pear",
+      TRUE ~ "Other"
+    ),
+    Variety = case_when(
+      grepl("Nepali", Commodity) ~ "Nepali",
+      grepl("Local", Commodity) ~ "Local",
+      grepl("Indian", Commodity) ~ "Indian",
+      grepl("Terai", Commodity) ~ "Terai",
+      grepl("Tunnel", Commodity) ~ "Tunnel",
+      grepl("Mude", Commodity) ~ "Mude",
+      grepl("Chinese", Commodity) ~ "Chinese",
+      grepl("Fuji", Commodity) ~ "Fuji",
+      grepl("Jholey", Commodity) ~ "Jholey",
+      TRUE ~ "Other" 
+    )
+  )
+head(data)
+```
+### Plots for Categories
+
+```{r}
+# Plot charts for different categories
+
+create_category_plot <- function(category_name) {
+  data_filtered <- data %>% filter(Category == category_name)
+
+  ggplot(data_filtered, aes(x = Date)) +
+    geom_line(aes(y = Average, color = "Average")) +
+    geom_line(aes(y = Minimum, color = "Minimum")) +
+    geom_line(aes(y = Maximum, color = "Maximum")) +
+    labs(title = paste("Price Trends for", category_name),
+         x = "Date",
+         y = "Price") +
+    scale_color_manual(values = c("Average" = "blue", "Minimum" = "red", "Maximum" = "green")) +
+    theme_minimal() 
+}
+
+unique_categories <- unique(data$Category)
+
+for (category in unique_categories) {
+  plot <- create_category_plot(category)
+  print(plot)
+}
+```
+### Plot Charts for Varieties
+
+```{r}
+# Create plots for different varieties
+create_variety_plot <- function(variety_name) {
+  data_filtered <- data %>% filter(Variety == variety_name)
+
+  ggplot(data_filtered, aes(x = Date)) +
+    geom_line(aes(y = Average, color = "Average")) +
+    geom_line(aes(y = Minimum, color = "Minimum")) +
+    geom_line(aes(y = Maximum, color = "Maximum")) +
+    labs(title = paste("Price Trends for", variety_name),
+         x = "Date",
+         y = "Price") +
+    scale_color_manual(values = c("Average" = "blue", "Minimum" = "red", "Maximum" = "green")) +
+    theme_minimal() 
+}
+
+unique_variety <- unique(data$Variety)
+
+for (variety in unique_variety) {
+  plot <- create_variety_plot(variety)
+  print(plot)
+}
+```
+## Tomato Data Analysis
+
+### Plot Tomato Varieties
+
+
+```{r}
+# Analysis for tomato data
+
+tomato_data <- data %>% filter(grepl("Tomato", Commodity))
+
+variety_plot <- ggplot(tomato_data, aes(x = Date, y = Average, color = Commodity)) +
+  geom_line() +
+  facet_wrap(~ Commodity, scales = "free_y") +
+  labs(title = "Tomato Prices by Variety", x = "Date", y = "Average Price") +
+  theme_minimal()
+
+print(variety_plot)
+
+
+```
+### Volatility
+
+```{r}
+tomato_data$Volatility <- tomato_data$Maximum - tomato_data$Minimum
+
+volatility_variety <- ggplot(tomato_data, aes(x = Date, y = Volatility, color = Commodity)) +
+  geom_line() +
+  labs(title = "Tomato Price Volatility by Variety", x = "Date", y = "Price Volatility") +
+  theme_minimal()
+
+print(volatility_variety)
+
+```
+### Price Corrplot
+
+
+```{r}
+tomato_data <- as.data.frame(tomato_data)
+
+tomato_data$Average <- as.numeric(tomato_data$Average)
+tomato_data$Minimum <- as.numeric(tomato_data$Minimum)
+tomato_data$Maximum <- as.numeric(tomato_data$Maximum)
+
+# Select numeric columns (Minimum, Maximum, Average)
+selected_data <- tomato_data[, c("Minimum", "Maximum", "Average")]
+
+# Calculate correlation matrix
+price_cor <- cor(selected_data, use = "pairwise.complete.obs")
+
+corrplot(price_cor, 
+         method = "circle",        # Use circles for correlation values
+         type = "upper",           # Show only the upper triangle
+         order = "AOE",            # Alphabetical order for labels
+         tl.col = "black",         # Black text labels
+         tl.srt = 45,              # Rotate text labels
+         addCoef.col = "black",    # Add coefficients on the plot
+         col = colorRampPalette(c("red", "white", "blue"))(200))  # Custom color scale
+```
+### Outlier Detection
+
+Tomato Big (Nepali) and Tomato Small (Tunnel) have the most significant outliers. Prices outliers in Tomato Big (Nepali) cluster around 105, 135, and 155 while Tomato Small (Tunnel) is consistently around 105. These trends are likely due to market disruptions such as demand spikes and supply shortages and niche production practices such as tunnel farming.
+
+```{r}
+# Detect outliers using boxplot
+outlier_plot <- ggplot(tomato_data, aes(y = Average, x = Category)) +
+  geom_boxplot() +
+  labs(title = "Outlier Detection for Tomato Categories")
+
+print(outlier_plot)
+
+# Z-score method
+tomato_data$z_score <- scale(tomato_data$Average)
+outliers <- tomato_data[abs(tomato_data$z_score) > 3, ]
+print(outliers)
+
+```
+### Principal Component Analysis
+
+```{r}
+#PCA for tomato category
+tomato_numeric <- tomato_data[, c("Minimum", "Maximum", "Average", "Volatility")]
+
+# standardized data for pca
+tomato_scaled <- scale(tomato_numeric)
+# perform pca
+pca <- prcomp(tomato_scaled, center = TRUE, scale. = TRUE)
+summary(pca)
+
+# Print PCA Loadings (Rotation)
+cat("\nPrincipal Component Loadings:\n")
+print(pca$rotation)
+
+# Variance explained by each principal component
+pca_variance <- pca$sdev^2
+proportion_variance <- pca_variance / sum(pca_variance)
+cumulative_variance <- cumsum(proportion_variance)
+
+# Create a dataframe for plotting
+pca_df <- data.frame(
+  Principal_Component = 1:length(proportion_variance),
+  Proportion_Variance = proportion_variance,
+  Cumulative_Variance = cumulative_variance
+)
+
+# Plot Individual Variance Explained
+plot1 <- ggplot(pca_df, aes(x = Principal_Component, y = Proportion_Variance)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "PC Individual Variance Explained",
+       x = "Principal Component", 
+       y = "Proportion of Variance Explained") +
+  theme_minimal()
+
+# Plot Cumulative Variance Explained
+plot2 <- ggplot(pca_df, aes(x = Principal_Component, y = Cumulative_Variance)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Cumulative Variance Explained",
+       x = "Principal Component", 
+       y = "Cumulative Proportion of Variance Explained") +
+  theme_minimal()
+
+# Combine both plots into one window
+library(gridExtra)  # For side-by-side plots
+grid.arrange(plot1, plot2, ncol = 2)
+
+pca_scores <- data.frame(pca$x)
+plot3 <- ggplot(pca_scores, aes(x = PC1, y = PC2)) +
+  geom_point() +
+  labs(title = "PCA Biplot", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+print(plot3)
+
+```
+## Model Selection
+### Linear Regression Models
+
+
+```{r}
+set.seed(123)  # Set a seed for reproducibility
+
+# Split index for 80% train / 20% test
+split_index <- floor(0.8 * nrow(tomato_data))
+
+# Shuffle the rows (optional for linear models)
+tomato_data <- tomato_data[sample(nrow(tomato_data)), ]
+
+# Create train and test sets
+train_data <- tomato_data[1:split_index, ]
+test_data <- tomato_data[(split_index + 1):nrow(tomato_data), ]
+
+# Check the sizes
+cat("Train size:", nrow(train_data), "\n")
+cat("Test size:", nrow(test_data), "\n")
+
+```
+
+#### Category Model
+
+```{r}
+# Convert Date to numeric for regression
+train_data$Date_Num <- as.numeric(as.Date(train_data$Date))
+test_data$Date_Num <- as.numeric(as.Date(test_data$Date))
+
+# Fit the model
+lm_avg_category <- lm(Average ~ Date_Num + Category, data = train_data)
+
+# Predict on the test set
+test_data$Predicted_Avg <- predict(lm_avg_category, newdata = test_data)
+
+# View model summary
+summary(lm_avg_category)
+
+# Calculate VIF
+vif_values <- vif(lm_avg_category)
+print(vif_values)
+# Fit a linear model
+bp_test <- bptest(lm_avg_category)
+print(bp_test)
+
+# Prepare data
+x <- model.matrix(Average ~ Date_Num + Category, train_data)[, -1]
+y <- train_data$Average
+
+# Fit Lasso regression
+lasso_model <- cv.glmnet(x, y, alpha = 1)  # Lasso
+print(lasso_model$lambda.min)  # Optimal penalty
+#plot
+par(mfrow = c(2, 2)) 
+plot(lm_avg_category)
+```
+#### Interaction Model 
+
+```{r}
+# Fit the model with interaction
+lm_avg_interaction <- lm(Average ~ Date_Num * Category, data = train_data)
+
+# Predict on the test set
+test_data$Predicted_Avg_Interaction <- predict(lm_avg_interaction, newdata = test_data)
+
+# View model summary
+summary(lm_avg_interaction)
+
+# Calculate VIF
+vif_values <- vif(lm_avg_interaction)
+print(vif_values)
+
+# Fit a linear model
+bp_test <- bptest(lm_avg_interaction)
+print(bp_test)
+
+# Prepare data
+x <- model.matrix(Average ~ Date_Num * Category, train_data)[, -1]
+y <- train_data$Average
+
+# Fit Lasso regression
+lasso_model <- cv.glmnet(x, y, alpha = 1)  # Lasso
+print(lasso_model$lambda.min)  # Optimal penalty
+
+par(mfrow = c(2, 2)) 
+plot(lm_avg_interaction)
+
+```
+#### Variety Model
+
+```{r}
+# Convert Variety to factor
+train_data$Variety <- as.factor(train_data$Variety)
+test_data$Variety <- as.factor(test_data$Variety)
+
+# Fit the model
+lm_avg_variety <- lm(Average ~ Date_Num + Variety, data = train_data)
+
+# Predict on the test set
+test_data$Predicted_Avg_Variety <- predict(lm_avg_variety, newdata = test_data)
+
+# View model summary
+summary(lm_avg_variety)
+
+# Calculate VIF
+vif_values <- vif(lm_avg_variety)
+print(vif_values)
+
+# Fit a linear model
+bp_test <- bptest(lm_avg_variety)
+print(bp_test)
+
+# Prepare data
+x <- model.matrix(Average ~ Date_Num + Variety, train_data)[, -1]
+y <- train_data$Average
+
+# Fit Lasso regression
+lasso_model <- cv.glmnet(x, y, alpha = 1)  # Lasso
+print(lasso_model$lambda.min)  # Optimal penalty
+
+par(mfrow = c(2, 2)) 
+plot(lm_avg_variety)
+```
+#### Combined Model
+
+```{r}
+# Fit the combined model
+lm_combined <- lm(Average ~ Date_Num + Category + Variety + Volatility, data = train_data)
+
+# Predict on the test set
+test_data$Predicted_Avg_Combined <- predict(lm_combined, newdata = test_data)
+
+# View model summary
+summary(lm_combined)
+
+# Calculate VIF
+vif_values <- vif(lm_combined)
+print(vif_values)
+
+# Fit a linear model
+bp_test <- bptest(lm_combined)
+print(bp_test)
+
+# Prepare data
+x <- model.matrix(Average ~ Date_Num + Category + Variety + Volatility, train_data)[, -1]
+y <- train_data$Average
+
+# Fit Lasso regression
+lasso_model <- cv.glmnet(x, y, alpha = 1)  # Lasso
+print(lasso_model$lambda.min)  # Optimal penalty
+
+par(mfrow = c(2, 2)) 
+plot(lm_combined)
+```
+### Linear Regression Model Metrics
+
+#### RMSE
+```{r}
+# Function to calculate RMSE
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+# Calculate RMSE for each model
+rmse_category <- rmse(test_data$Average, test_data$Predicted_Avg)
+rmse_interaction <- rmse(test_data$Average, test_data$Predicted_Avg_Interaction)
+rmse_variety <- rmse(test_data$Average, test_data$Predicted_Avg_Variety)
+rmse_combined <- rmse(test_data$Average, test_data$Predicted_Avg_Combined)
+
+# Print RMSE results
+cat("RMSE for Category Model:", rmse_category, "\n")
+cat("RMSE for Interaction Model:", rmse_interaction, "\n")
+cat("RMSE for Variety Model:", rmse_variety, "\n")
+cat("RMSE for Combined Model:", rmse_combined, "\n")
+```
+
+#### MAE
+```{r}
+# Function to calculate MAE
+mae <- function(actual, predicted) {
+  mean(abs(actual - predicted))
+}
+
+# Calculate MAE for each model
+mae_category <- mae(test_data$Average, test_data$Predicted_Avg)
+mae_interaction <- mae(test_data$Average, test_data$Predicted_Avg_Interaction)
+mae_variety <- mae(test_data$Average, test_data$Predicted_Avg_Variety)
+mae_combined <- mae(test_data$Average, test_data$Predicted_Avg_Combined)
+
+# Print MAE results
+cat("MAE for Category Model:", mae_category, "\n")
+cat("MAE for Interaction Model:", mae_interaction, "\n")
+cat("MAE for Variety Model:", mae_variety, "\n")
+cat("MAE for Combined Model:", mae_combined, "\n")
+
+```
+
+#### R-Squared
+```{r}
+# Function to calculate R-squared
+r_squared <- function(actual, predicted) {
+  1 - (sum((actual - predicted)^2) / sum((actual - mean(actual))^2))
+}
+
+# Calculate R-squared
+r2_category <- r_squared(test_data$Average, test_data$Predicted_Avg)
+r2_interaction <- r_squared(test_data$Average, test_data$Predicted_Avg_Interaction)
+r2_variety <- r_squared(test_data$Average, test_data$Predicted_Avg_Variety)
+r2_combined <- r_squared(test_data$Average, test_data$Predicted_Avg_Combined)
+
+# Print R-squared results
+cat("R-squared for Category Model:", r2_category, "\n")
+cat("R-squared for Interaction Model:", r2_interaction, "\n")
+cat("R-squared for Variety Model:", r2_variety, "\n")
+cat("R-squared for Combined Model:", r2_combined, "\n")
+```
+
+#### MSE
+```{r}
+# Function to calculate Mean Squared Error (MSE)
+mse <- function(actual, predicted) {
+  mean((actual - predicted)^2)
+}
+
+# Calculate MSE 
+mse_category <- mse(test_data$Average, test_data$Predicted_Avg)
+mse_interaction <- mse(test_data$Average, test_data$Predicted_Avg_Interaction)
+mse_variety <- mse(test_data$Average, test_data$Predicted_Avg_Variety)
+mse_combined <- mse(test_data$Average, test_data$Predicted_Avg_Combined)
+
+
+# Print MSE results
+cat("MSE Results:\n")
+cat("  Category Model:", mse_category, "\n")
+cat("  Interaction Model:", mse_interaction, "\n")
+cat("  Variety Model:", mse_variety, "\n")
+cat("  Combined Model:", mse_combined, "\n\n")
+
+```
+
+#### MAPE
+```{r}
+# Function to calculate Mean Absolute Percentage Error (MAPE)
+mape <- function(actual, predicted) {
+  mean(abs((actual - predicted) / actual)) * 100
+}
+
+mape_category <- mape(test_data$Average, test_data$Predicted_Avg)
+mape_interaction <- mape(test_data$Average, test_data$Predicted_Avg_Interaction)
+mape_variety <- mape(test_data$Average, test_data$Predicted_Avg_Variety)
+mape_combined <- mape(test_data$Average, test_data$Predicted_Avg_Combined)
+
+# Print MAPE results
+cat("MAPE Results:\n")
+cat("  Category Model:", mape_category, "%\n")
+cat("  Interaction Model:", mape_interaction, "%\n")
+cat("  Variety Model:", mape_variety, "%\n")
+cat("  Combined Model:", mape_combined, "%\n")
+```
+### Linear Regression Models Results 
+
+```{r}
+# Combine all metrics into a dataframe
+results <- data.frame(
+  Model = c("Category", "Interaction", "Variety", "Combined"),
+  RMSE = c(rmse_category, rmse_interaction, rmse_variety, rmse_combined),
+  MAE = c(mae_category, mae_interaction, mae_variety, mae_combined),
+  R2 = c(r2_category, r2_interaction, r2_variety, r2_combined),
+  MSE = c(mse_category, mse_interaction, mse_variety, mse_combined),
+  MAPE = c(mape_category, mape_interaction, mape_variety, mape_combined)
+)
+
+# Print the results
+print(results)
+
+```
+
+### Stationarity, Decomposition and ACF and PACF
+
+Before fitting my models for ARIMA I performed stationarity test, analyzed the time series decomposition to understand the seasonal patterns and examined the ACF and PACF plots to identify potential AR and MA terms for your ARIMA.
+
+```{r}
+# Filter for different varieties
+big_tomato <- data %>% filter(Category == "Tomato Big")
+small_tomato <- data %>% filter(Category == "Tomato Small")
+
+# --- Stationarity Testing ---
+
+# Perform ADF test on big_tomato prices
+adf_result_big <- adf.test(big_tomato$Average) 
+print(adf_result_big)
+
+# Perform ADF test on small_tomato prices
+adf_result_small <- adf.test(small_tomato$Average)
+print(adf_result_small)
+
+# If p-value > 0.05 (non-stationary), apply differencing
+# Example for big_tomato (repeat for small_tomato if needed)
+if(adf_result_big$p.value > 0.05) {
+  big_tomato$Average <- diff(big_tomato$Average)  
+  # Re-test for stationarity after differencing
+  adf_result_big <- adf.test(big_tomato$Average)
+  print(adf_result_big)
+}
+
+
+# Determine split index (80% train, 20% test)
+split_index_big <- floor(0.8 * nrow(big_tomato))
+split_index_small <- floor(0.8 * nrow(small_tomato))
+
+# Split data into train and test sets
+train_big <- big_tomato[1:split_index_big, ]
+test_big <- big_tomato[(split_index_big + 1):nrow(big_tomato), ]
+
+train_small <- small_tomato[1:split_index_small, ]
+test_small <- small_tomato[(split_index_small + 1):nrow(small_tomato), ]
+
+# Create time series objects for training data
+ts_train_big <- ts(train_big$Average, 
+                   start = c(year(min(train_big$Date)), as.numeric(format(min(train_big$Date), "%j"))), 
+                   frequency = 365) 
+
+ts_train_small <- ts(train_small$Average, 
+                   start = c(year(min(train_small$Date)), as.numeric(format(min(train_small$Date), "%j"))), 
+                   frequency = 365) 
+
+# Decompose Tomato Big data to observe seasonality
+decompose_big <- stl(ts_train_big, s.window = "periodic")
+plot(decompose_big)
+
+# Decompose Tomato Small data
+decompose_small <- stl(ts_train_small, s.window = "periodic")
+plot(decompose_small)
+
+# Check ACF and PACF to identify seasonality
+par(mfrow = c(2, 1))
+Acf(ts_train_big, main = "ACF - Tomato Big")
+Pacf(ts_train_big, main = "PACF - Tomato Big")
+
+Acf(ts_train_small, main = "ACF - Tomato Small")
+Pacf(ts_train_small, main = "PACF - Tomato Small")
+```
+### ARIMA
+
+```{r}
+
+# Fit ARIMA models to training data
+arima_big <- auto.arima(ts_train_big)
+arima_small <- auto.arima(ts_train_small)
+
+# Forecast future prices (on the length of the test set)
+forecast_big <- forecast(arima_big, h = nrow(test_big))
+forecast_small <- forecast(arima_small, h = nrow(test_small))
+
+# Generate proper date sequence for the entire dataset
+big_dates <- as.Date(big_tomato$Date)
+small_dates <- as.Date(small_tomato$Date)
+
+
+# Combine actual values and forecasts with dates
+big_forecast_df <- data.frame(
+  Date = big_dates,
+  Actual = big_tomato$Average,
+  Forecast = c(rep(NA, length(ts_train_big)), forecast_big$mean)
+)
+
+small_forecast_df <- data.frame(
+  Date = small_dates,
+  Actual = small_tomato$Average,
+  Forecast = c(rep(NA, length(ts_train_small)), forecast_small$mean)
+)
+
+# Create and store the ggplot object
+arima_tomato_forecast_plot <- ggplot() +
+  geom_line(data = big_forecast_df, aes(x = Date, y = Actual, color = "Tomato Big", linetype = "Tomato Big")) +
+  geom_line(data = big_forecast_df, aes(x = Date, y = Forecast, color = "Tomato Big", linetype = "Tomato Big")) +
+  geom_line(data = small_forecast_df, aes(x = Date, y = Actual, color = "Tomato Small", linetype = "Tomato Small")) +
+  geom_line(data = small_forecast_df, aes(x = Date, y = Forecast, color = "Tomato Small", linetype = "Tomato Small")) +
+  labs(title = "ARIMA Tomato Big vs Small Forecast (Daily)", x = "Date", y = "Price") +
+  theme_minimal() +
+  scale_color_manual(
+    values = c("Tomato Big" = "blue", "Tomato Small" = "red") 
+  ) +
+  scale_linetype_manual(
+    values = c("Tomato Big" = "solid", "Tomato Big" = "dashed", 
+               "Tomato Small" = "solid", "Tomato Small" = "dashed")
+  ) + 
+  guides(linetype = "none")  # Remove the linetype legend
+
+print(arima_tomato_forecast_plot)
+
+```
+### ARIMA Metrics
+```{r}
+# Evaluate ARIMA for Big Tomato
+actual_big <- test_big$Average
+predicted_big <- forecast_big$mean
+
+rmse_arima_big <- rmse(actual_big, predicted_big)
+mae_arima_big <- mae(actual_big, predicted_big)
+mse_arima_big <- mse(actual_big, predicted_big)
+mape_arima_big <- mape(actual_big, predicted_big)
+
+cat("Tomato Big - RMSE:", rmse_arima_big, "\n")
+cat("Tomato Big - MAE:", mae_arima_big, "\n")
+cat("Tomato Big - MSE:", mse_arima_big, "\n")
+cat("Tomato Big - MAPE:", mape_arima_big, "\n")
+
+# Evaluate ARIMA for Small Tomato
+actual_small <- test_small$Average
+predicted_small <- forecast_small$mean
+
+rmse_arima_small <- rmse(actual_big, predicted_big)
+mae_arima_small <- mae(actual_big, predicted_big)
+mse_arima_small <- mse(actual_big, predicted_big)
+mape_arima_small <- mape(actual_big, predicted_big)
+
+cat("Tomato Small - RMSE:", rmse_arima_small, "\n")
+cat("Tomato Small - MAE:", mape_arima_small, "\n")
+cat("Tomato Small - MSE:", mse_arima_small, "\n")
+cat("Tomato Small - MAPE:", mape_arima_small, "\n")
+
+```
+### SARIMA
+
+
+```{r}
+# Fit SARIMA model for Tomato Big
+sarima_big <- auto.arima(ts_train_big, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+
+# Summary of the model
+summary(sarima_big)
+
+# Fit SARIMA model for Tomato Small
+sarima_small <- auto.arima(ts_train_small, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+
+# Summary of the model
+summary(sarima_small)
+
+forecast_big_sarima <- forecast(sarima_big, h = nrow(test_big))
+# Convert test set average prices to a time series
+test_big_ts <- ts(test_big$Average, start = end(ts_train_big), frequency = 365)
+
+# Plot forecast
+autoplot(forecast_big_sarima) +
+  autolayer(test_big_ts, series = "Actual", color = "blue") +
+  ggtitle("SARIMA Forecast for Tomato Big") +
+  xlab("Date") + ylab("Price") +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual" = "blue", "Forecast" = "black")) +
+  scale_x_yearmon(format = "%Y-%m") 
+
+forecast_small_sarima <- forecast(sarima_small, h = nrow(test_small))
+# Convert test set average prices to a time series
+test_small_ts <- ts(test_small$Average, start = end(ts_train_small), frequency = 365)
+
+
+# Plot forecast
+autoplot(forecast_small_sarima) +
+  autolayer(test_small_ts, series = "Actual", color = "red") +
+  ggtitle("SARIMA Forecast for Tomato Small") +
+  xlab("Date") + ylab("Price") +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual" = "red", "Forecast" = "black"))+
+  scale_x_yearmon(format = "%Y-%m") 
+
+```
+
+
+### SARIMA Metrics
+```{r}
+
+# Tomato Big
+actual_big <- test_big$Average
+predicted_big <- forecast_big_sarima$mean
+
+rmse_sarima_big <- rmse(actual_big, predicted_big)
+mae_sarima_big <- mae(actual_big, predicted_big)
+mse_sarima_big <- mse(actual_big, predicted_big)
+mape_sarima_big <- mape(actual_big, predicted_big)
+
+cat("Tomato Big - RMSE:", rmse_sarima_big, "\n")
+cat("Tomato Big - MAE:", mae_sarima_big, "\n")
+cat("Tomato Big - MSE:", mse_sarima_big, "\n")
+cat("Tomato Big - MAPE:", mape_sarima_big, "\n")
+
+# Tomato Small
+actual_small <- test_small$Average
+predicted_small <- forecast_small_sarima$mean
+
+rmse_sarima_small <- rmse(actual_big, predicted_big)
+mae_sarima_small <- mae(actual_big, predicted_big)
+mse_sarima_small <- mse(actual_big, predicted_big)
+mape_sarima_small <- mape(actual_big, predicted_big)
+
+cat("Tomato Small - RMSE:", rmse_sarima_small, "\n")
+cat("Tomato Small - MAE:", mape_sarima_small, "\n")
+cat("Tomato Small - MSE:", mse_sarima_small, "\n")
+cat("Tomato Small - MAPE:", mape_sarima_small, "\n")
+
+
+```
+
+### Rolling Average
+```{r}
+# Apply rolling mean with a 7-day window to training data
+train_big$Rolling_Avg <- rollmean(train_big$Average, k = 7, fill = NA, align = "right")
+train_small$Rolling_Avg <- rollmean(train_small$Average, k = 7, fill = NA, align = "right")
+
+# Combine rolling averages for plotting
+rolling_data <- rbind(
+  data.frame(Date = train_big$Date, Rolling_Avg = train_big$Rolling_Avg, Type = "Big Tomato"),
+  data.frame(Date = train_small$Date, Rolling_Avg = train_small$Rolling_Avg, Type = "Small Tomato")
+)
+
+# Plot rolling averages 
+rolling_averages_plot <- ggplot(rolling_data, aes(x = Date, y = Rolling_Avg, color = Type)) +
+  geom_line(size = 1) +
+  labs(
+    title = "7-Day Rolling Average: Big vs Small Tomato (Training Data)",  # Updated title
+    x = "Date",
+    y = "Rolling Average Price"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Big Tomato" = "blue", "Small Tomato" = "red")) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis for better readability
+  )
+
+print(rolling_averages_plot)
+
+# Save the plot to a file
+
+```
+
+### VAR and VECM Model and Cointegration
+
+```{r}
+# Align and Clean Data
+aligned_data <- merge(
+  big_tomato[, c("Date", "Average")],
+  small_tomato[, c("Date", "Average")],
+  by = "Date", suffixes = c("_Big", "_Small")
+)
+aligned_data$Average_Big <- na.approx(aligned_data$Average_Big)
+aligned_data$Average_Small <- na.approx(aligned_data$Average_Small)
+
+# Prepare Data Matrix
+data_matrix <- as.matrix(aligned_data[, c("Average_Big", "Average_Small")])
+
+# Johansen Cointegration Test
+johansen_test <- ca.jo(data_matrix, type = "trace", ecdet = "const", K = 2)
+summary(johansen_test)
+
+# Cointegration Check
+test_stat <- johansen_test@teststat
+critical_val <- johansen_test@cval[, "5pct"]
+
+if (test_stat[1] > critical_val[1]) {
+  cat("\nCointegration detected: Proceeding with VECM...\n")
+  
+  # VECM Model and Forecasting
+  vecm_as_var <- vec2var(johansen_test, r = 1)
+  n_ahead <- 10
+  vecm_forecast <- predict(vecm_as_var, n.ahead = n_ahead)
+  
+  # Back-Transform Forecasts
+  last_big_value <- tail(aligned_data$Average_Big, 1)
+  last_small_value <- tail(aligned_data$Average_Small, 1)
+  
+  forecast_big <- cumsum(c(last_big_value, vecm_forecast$fcst$Average_Big[, "fcst"]))[-1]
+  forecast_small <- cumsum(c(last_small_value, vecm_forecast$fcst$Average_Small[, "fcst"]))[-1]
+  
+  # Forecast Data Frame
+  forecast_dates <- seq(as.Date(tail(aligned_data$Date, 1)) + 1, by = "days", length.out = n_ahead)
+  forecast_data <- data.frame(
+    Date = forecast_dates,
+    Big_Tomato_Forecast = forecast_big,
+    Small_Tomato_Forecast = forecast_small
+  )
+  
+  # Metrics (Using last n_ahead actuals as dummy for comparison)
+  actual_big <- tail(aligned_data$Average_Big, n_ahead)
+  actual_small <- tail(aligned_data$Average_Small, n_ahead)
+  
+  rmse_vecm_big <- rmse(actual_big, predicted_big)
+  mae_vecm_big <- mae(actual_big, predicted_big)
+  mse_vecm_big <- mse(actual_big, predicted_big)
+  mape_vecm_big <- mape(actual_big, predicted_big)
+  
+  
+  rmse_vecm_small <- rmse(actual_big, predicted_big)
+  mae_vecm_small <- mae(actual_big, predicted_big)
+  mse_vecm_small <- mse(actual_big, predicted_big)
+  mape_vecm_small <- mape(actual_big, predicted_big)
+  
+    
+  cat("\n--- Metrics for VECM Forecast ---\n")
+  cat("Big Tomato RMSE:", rmse_vecm_big, "\n")
+  cat("Big Tomato MAE:", mae_vecm_big, "\n")
+  cat("Big Tomato RMSE:", mse_vecm_big, "\n")
+  cat("Big Tomato MAE:", mape_vecm_big, "\n")
+  cat("Small Tomato RMSE:", rmse_vecm_small, "\n")
+  cat("Small Tomato MAE:", mae_vecm_small, "\n")
+  cat("Small Tomato MSE:", mse_vecm_small, "\n")
+  cat("Small Tomato MAPE:", mape_vecm_small, "\n")
+  
+  
+  # Plot Forecast Results for VECM
+  vecm_plot <- ggplot(forecast_data, aes(x = Date)) +
+    geom_line(aes(y = Big_Tomato_Forecast, color = "Big Tomato (Forecast)"), size = 1) +
+    geom_line(aes(y = Small_Tomato_Forecast, color = "Small Tomato (Forecast)"), size = 1) +
+    labs(
+      title = "VECM Forecast: Big vs Small Tomatoes",
+      x = "Date",
+      y = "Prices"
+    ) +
+    theme_minimal() +
+    scale_color_manual(
+      name = "Legend",
+      values = c("Big Tomato (Forecast)" = "blue", "Small Tomato (Forecast)" = "red")
+    )
+  print(vecm_plot)
+
+} else {
+  cat("\nNo Cointegration detected: Proceeding with VAR model...\n")
+  
+  # Train-Test Split
+  train_ratio <- 0.8
+  split_index <- floor(nrow(aligned_data) * train_ratio)
+  train_data <- aligned_data[1:split_index, c("Average_Big", "Average_Small")]
+  test_data <- aligned_data[(split_index + 1):nrow(aligned_data), ]
+  
+  # Fit VAR Model
+  lag_selection <- VARselect(train_data, lag.max = 10, type = "const")
+  var_model <- VAR(train_data, p = lag_selection$selection["AIC(n)"], type = "const")
+  n_ahead <- nrow(test_data)
+  
+  # Forecast using VAR Model
+  var_forecast <- predict(var_model, n.ahead = n_ahead)
+  
+  # Back-Transform Forecasts
+  last_big_value <- tail(aligned_data$Average_Big[1:split_index], 1)
+  last_small_value <- tail(aligned_data$Average_Small[1:split_index], 1)
+  
+  forecast_big <- cumsum(c(last_big_value, var_forecast$fcst$Average_Big[, "fcst"]))[-1]
+  forecast_small <- cumsum(c(last_small_value, var_forecast$fcst$Average_Small[, "fcst"]))[-1]
+  
+  # Forecast Data Frame
+  forecast_dates <- test_data$Date
+  forecast_data <- data.frame(
+    Date = forecast_dates,
+    Big_Tomato_Forecast = forecast_big,
+    Small_Tomato_Forecast = forecast_small
+  )
+  
+  # Metrics
+  actual_big <- test_data$Average_Big
+  actual_small <- test_data$Average_Small
+  
+  rmse_vecm_big <- rmse(actual_big, predicted_big)
+  mae_vecm_big <- mae(actual_big, predicted_big)
+  mse_vecm_big <- mse(actual_big, predicted_big)
+  mape_vecm_big <- mape(actual_big, predicted_big)
+  
+  
+  rmse_vecm_small <- rmse(actual_big, predicted_big)
+  mae_vecm_small <- mae(actual_big, predicted_big)
+  mse_vecm_small <- mse(actual_big, predicted_big)
+  mape_vecm_small <- mape(actual_big, predicted_big)
+  
+    
+  cat("\n--- Metrics for VECM Forecast ---\n")
+  cat("Big Tomato RMSE:", rmse_vecm_big, "\n")
+  cat("Big Tomato MAE:", mae_vecm_big, "\n")
+  cat("Big Tomato RMSE:", mse_vecm_big, "\n")
+  cat("Big Tomato MAE:", mape_vecm_big, "\n")
+  cat("Small Tomato RMSE:", rmse_vecm_small, "\n")
+  cat("Small Tomato MAE:", mae_vecm_small, "\n")
+  cat("Small Tomato MSE:", mse_vecm_small, "\n")
+  cat("Small Tomato MAPE:", mape_vecm_small, "\n")
+  
+  
+  # Plot Forecast Results for VAR
+  var_model <- ggplot(forecast_data, aes(x = Date)) +
+    geom_line(aes(y = Big_Tomato_Forecast, color = "Big Tomato (Forecast)"), size = 1) +
+    geom_line(aes(y = Small_Tomato_Forecast, color = "Small Tomato (Forecast)"), size = 1) +
+    labs(
+      title = "VAR Forecast: Big vs Small Tomatoes",
+      x = "Date",
+      y = "Prices"
+    ) +
+    theme_minimal() +
+    scale_color_manual(
+      name = "Legend",
+      values = c("Big Tomato (Forecast)" = "blue", "Small Tomato (Forecast)" = "red")
+    )
+  
+  print(varm_plot)
+}
+```
+
+#### GARCH Models
+
+```{r}
+# Function: Ensure Date Format
+prepare_data <- function(data, column_name) {
+  data$Date <- as.Date(data$Date)
+  return(data)
+}
+
+# Function: Stationarity Check and Differencing
+stationarity_check <- function(data, column) {
+  adf_result <- adf.test(data[[column]], k = 0)
+  if (adf_result$p.value > 0.05) {
+    cat("Differencing data...\n")
+    differenced_data <- diff(data[[column]], differences = 1)
+    differenced_data <- na.omit(differenced_data)
+  } else {
+    differenced_data <- data[[column]]
+  }
+  return(differenced_data)
+}
+
+# Function: Train-Test Split
+train_test_split <- function(data, test_size) {
+  list(train = head(data, -test_size), test = tail(data, test_size))
+}
+
+# Function: Fit GARCH Model
+fit_garch <- function(train_data, test_size) {
+  spec <- ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+    mean.model = list(armaOrder = c(1, 0), include.mean = TRUE),
+    distribution.model = "norm"
+  )
+  fit <- ugarchfit(spec = spec, data = train_data, out.sample = test_size)
+  return(fit)
+}
+
+# Function: Forecast GARCH Model
+forecast_garch <- function(fit, test_size) {
+  forecast <- ugarchforecast(fit, n.ahead = test_size, n.roll = test_size - 1)
+  list(mean = as.numeric(fitted(forecast)), volatility = as.numeric(sigma(forecast)))
+}
+
+# Function: Evaluate Forecasts
+evaluate_forecasts <- function(actual, forecast) {
+  cat("RMSE:", rmse(actual, forecast), "\n")
+  cat("MAE:", mae(actual, forecast), "\n")
+  cat("MSE:", mse(actual, forecast), "\n")
+  cat("MAPE:", mape(actual, forecast), "\n")
+}
+
+# Function: Plot Results
+plot_forecast <- function(dates, actual, forecast_mean, forecast_volatility, title) {
+  forecast_data <- data.frame(Date = dates, Actual = actual, Forecast_Mean = forecast_mean, Forecast_Volatility = forecast_volatility)
+  
+  garch_plot <- ggplot(forecast_data, aes(x = Date)) +
+    geom_line(aes(y = Actual, color = "Actual Prices"), size = 1) +
+    geom_line(aes(y = Forecast_Mean, color = "Forecasted Mean"), linetype = "dashed", size = 1) +
+    geom_line(aes(y = Forecast_Volatility, color = "Forecasted Volatility"), linetype = "dotted", size = 1) +
+    labs(title = title, x = "Date", y = "Price / Volatility") +
+    scale_color_manual(values = c("Actual Prices" = "blue", "Forecasted Mean" = "red", "Forecasted Volatility" = "green")) +
+    theme_minimal()
+  
+  print(garch_plot)
+}
+
+# Main Workflow for GARCH Analysis
+garch_workflow <- function(data, column, test_size, title) {
+  data <- prepare_data(data, column)
+  differenced_data <- stationarity_check(data, column)
+  split <- train_test_split(differenced_data, test_size)
+  
+  garch_fit <- fit_garch(split$train, test_size)
+  forecast <- forecast_garch(garch_fit, test_size)
+  
+  actual_values <- tail(data[[column]], test_size)
+  cat("\n--- Metrics ---\n")
+  evaluate_forecasts(actual_values, forecast$mean)
+  
+  plot_forecast(tail(data$Date, test_size), actual_values, forecast$mean, forecast$volatility, title)
+}
+
+# --- Run for Big and Small Tomatoes ---
+cat("\n--- Big Tomato Analysis ---\n")
+garch_workflow(big_tomato, "Average", test_size = 30, title = "GARCH Forecast: Big Tomatoes")
+
+cat("\n--- Small Tomato Analysis ---\n")
+small_tomato <- data %>% filter(grepl("Small", Commodity))
+garch_workflow(small_tomato, "Average", test_size = 30, title = "GARCH Forecast: Small Tomatoes")
+
+
+```
+## Benchmarking
+```{r}
+  
+results <- data.frame(
+  Model = c("Linear Regression Category", "Linear Regression Interaction", "Linear Regression Variety", "Linear Regression Combined", "ARIMA Tomato Big", "ARIMA Tomato Small","SARIMA Tomato Big", "SARIMA Tomato Big","VECM Tomato Big", "VECM Tomato Small","GARCH Tomato Big", "GARCH Tomato Small"),
+  RMSE = c(rmse_category, rmse_interaction, rmse_variety, rmse_combined, rmse_arima_big, rmse_arima_small, rmse_sarima_big, rmse_sarima_small, rmse_vecm_big, rmse_vecm_small, 7.348163, 10.75728),
+  MAE = c(mae_category, mae_interaction, mae_variety, mae_combined, mae_arima_big, mae_arima_small, mae_sarima_big, mae_sarima_small, mae_vecm_big, mae_vecm_small, 4.953835, 9.487709),
+  MSE = c(mse_category, mse_interaction, mse_variety, mse_combined, mse_arima_big, mse_arima_small, mse_sarima_big, mse_sarima_small, mse_vecm_big, mse_vecm_small, 53.9955, 115.7192),
+  MAPE = c(mape_category, mape_interaction, mape_variety, mape_combined, mape_arima_big, mape_arima_small, mape_sarima_big, mape_sarima_small, mape_vecm_big, mape_vecm_small, 12.24883, 58.19615)
+)
+
+print(results)
+
+
+```
+
+
+
